@@ -1,0 +1,7 @@
+.vscode
+config.yml
+go.sum
+gossh
+gssh
+windows.sh
+gossh.sh
