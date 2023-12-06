@@ -1,12 +1,10 @@
 # gossh，实现简单的服务器ssh登录管理以及sftp的文件上传和下载
 
-***
 
 gossh 支持mac、linux、windows(todo);
 
 ## 功能说明
 
-***
 
 *   管理服务器
 *   免输入密码登录服务器
