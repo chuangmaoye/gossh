@@ -1,11 +1,20 @@
 package core
 
 import (
+	"bufio"
+	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -193,7 +202,7 @@ func (c *Cli) connect() error {
 		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 			return nil
 		},
-		Timeout: 10 * time.Second,
+		Timeout: 30 * time.Second,
 	}
 	addr := fmt.Sprintf("%s:%d", c.IP, c.Port)
 	sshClient, err := ssh.Dial("tcp", addr, &config)
@@ -252,4 +261,206 @@ func (c Cli) NewSession() (*ssh.Session, error) {
 	}
 
 	return session, nil
+}
+
+func (c Cli) ProxyTerminal(port string) error {
+	sigChan := make(chan os.Signal, 1)
+	// 使用signal.Notify函数将收到的信号发送到sigChan
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	addr := "127.0.0.1"
+	config := ProxyConfig{
+		HTTPProxy:  addr,
+		HTTPSProxy: addr,
+		Port:       port,
+		Enable:     true,
+	}
+	if err := SetSystemProxy(config); err != nil {
+		log.Printf("设置代理失败: %v", err)
+		return err
+	}
+	server := &http.Server{
+		Addr: ":" + port,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodConnect {
+				c.handleTunneling(w, r)
+			} else {
+				c.handleHTTP(w, r)
+			}
+		}),
+	}
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("服务器启动失败: %v", err)
+		}
+	}()
+	<-sigChan
+	fmt.Println("接收到中断信号，正在关闭服务...")
+
+	// 优雅关闭服务器
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("服务器关闭失败: %v", err)
+	}
+	fmt.Println("服务退出")
+	DisableSystemProxy()
+	return nil
+}
+
+func (c Cli) handleHTTP(w http.ResponseWriter, req *http.Request) {
+	// 检查是否需要通过SSH隧道转发
+	if c.Client != nil {
+		// log.Printf("进入了http函数")
+		c.handleSSHTunnelHTTP(w, req)
+		return
+	}
+
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyHeader(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+func (c Cli) handleTunneling(w http.ResponseWriter, req *http.Request) {
+	// 检查是否需要通过SSH隧道转发
+	if c.Client != nil {
+		// log.Printf("进入了https函数")
+		c.handleSSHTunnelHTTPS(w, req)
+		return
+	}
+
+	destConn, err := net.DialTimeout("tcp", req.Host, 10*time.Second)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	go transfer(destConn, clientConn)
+	go transfer(clientConn, destConn)
+}
+
+// 通过SSH隧道处理HTTP请求
+func (c Cli) handleSSHTunnelHTTP(w http.ResponseWriter, req *http.Request) {
+	// 通过SSH连接建立到目标服务器的连接
+	addr := req.Host
+	if req.URL.Port() == "" {
+		addr += ":80"
+	}
+	remoteConn, err := c.Client.Dial("tcp", addr)
+	// log.Printf("host: %s", addr)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("SSH tunnel error: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	// defer remoteConn.Close()
+
+	// 发送HTTP请求
+	err = req.Write(remoteConn)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Write error: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+
+	// 读取响应
+	resp, err := http.ReadResponse(bufio.NewReader(remoteConn), req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Read response error: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyHeader(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// 通过SSH隧道处理HTTPS请求
+func (c Cli) handleSSHTunnelHTTPS(w http.ResponseWriter, req *http.Request) {
+	// 通过SSH连接建立到目标服务器的连接
+
+	remoteConn, err := c.Client.Dial("tcp", req.Host)
+	// log.Printf("host: %s", req.Host)
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("SSH tunnel error: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	// defer remoteConn.Close()
+
+	w.WriteHeader(http.StatusOK)
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	// startLocalListener(remoteConn, clientConn)
+	go transfer(remoteConn, clientConn)
+	go transfer(clientConn, remoteConn)
+	// go transfer(clientConn, remoteConn)
+}
+
+func transfer(destination io.WriteCloser, source io.ReadCloser) {
+	defer destination.Close()
+	defer source.Close()
+	io.Copy(destination, source)
+}
+
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func (c Cli) NewMultipleHostsReverseProxy(targets []*url.URL) *httputil.ReverseProxy {
+	director := func(req *http.Request) {
+		target := targets[rand.Int()%len(targets)]
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.URL.Path = target.Path
+	}
+	return &httputil.ReverseProxy{
+		Director: director,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// 如果配置了SSH客户端且是内部请求，通过SSH隧道转发
+				// if sshClient != nil && isInternalRequest(req) {
+				if c.Client != nil {
+					return c.Client.Dial(network, addr)
+				}
+				return net.Dial(network, addr)
+			},
+		},
+	}
 }

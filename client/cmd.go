@@ -24,6 +24,7 @@ var (
 	Config         string
 	Threads        int
 	Replace        bool
+	Port           string
 )
 
 func init() {
@@ -39,12 +40,14 @@ func init() {
 
 	RootCmd.AddCommand(copyCmd)
 	RootCmd.AddCommand(serveCmd)
+	RootCmd.AddCommand(porxyCmd)
 	copyCmd.Flags().BoolVarP(&downDir, "dir", "d", false, "下载文件夹")
 	copyCmd.Flags().StringVarP(&Config, "config", "c", "", "配置文件")
 	copyCmd.Flags().IntVarP(&Threads, "thread", "t", 10, "线程数")
 	copyCmd.Flags().BoolVarP(&Replace, "replace", "r", false, "是否替换文件")
 	serveCmd.Flags().StringVarP(&Config, "config", "c", "", "配置文件")
 	RootCmd.Flags().StringVarP(&Config, "config", "c", "", "配置文件")
+	porxyCmd.Flags().StringVarP(&Port, "port", "p", "8080", "端口")
 }
 
 func GetCurrentDir() string {
@@ -125,6 +128,33 @@ var serveCmd = &cobra.Command{
 			} else if len(SshConfig.Addresss) > index {
 				fmt.Println(SshConfig.Addresss[index].ServerName)
 				Terminal(SshConfig.Addresss[index])
+			} else {
+				fmt.Println("服务不存在请重新输入！")
+			}
+		}
+	},
+}
+
+var porxyCmd = &cobra.Command{
+	Use:   "proxy",
+	Short: `启动代理服务`,
+	Long:  `启动代理服务，gossh proxy [key]|[索引]`,
+	Run: func(cmd *cobra.Command, args []string) {
+		if Config != "" {
+			configor.Load(&SshConfig, Config)
+		}
+		if len(args) > 0 {
+			index, err := strconv.Atoi(args[0])
+			if err != nil {
+				if addr, ok := ServerAddresss[args[0]]; ok {
+					fmt.Println(addr.ServerName)
+					ProxyTerminal(addr, Port)
+				} else {
+					fmt.Println("服务不存在请重新输入！")
+				}
+			} else if len(SshConfig.Addresss) > index {
+				fmt.Println(SshConfig.Addresss[index].ServerName)
+				ProxyTerminal(SshConfig.Addresss[index], Port)
 			} else {
 				fmt.Println("服务不存在请重新输入！")
 			}
