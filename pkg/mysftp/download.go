@@ -66,7 +66,7 @@ func (s *MySftp) Download(remoteFile, localFile core.File, callBack core.Callbac
 	progressWriter := &ProgressWriter{
 		Writer:       dstFile,
 		Total:        fileSize,
-		Desc:         "downloading",
+		Desc:         "downloading-" + remoteFile.ServerName,
 		Bar:          bar1,
 		TransferSize: localFileSize,
 	}
