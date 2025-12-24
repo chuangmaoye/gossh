@@ -48,6 +48,7 @@ func (s *MySftp) Download(remoteFile, localFile core.File, callBack core.Callbac
 		if err != nil {
 			return err
 		}
+		localFileSize = 0
 	} else {
 		dstFile, err = os.OpenFile(localFile.Path(), os.O_APPEND|os.O_WRONLY, os.ModeAppend)
 		if err != nil {
