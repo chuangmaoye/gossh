@@ -14,11 +14,14 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 )
 
@@ -111,46 +114,64 @@ func (c *Cli) RunTerminalSession(session *ssh.Session, shell string) error {
 }
 
 // EnterTerminal 完全进入终端
-func (c Cli) EnterTerminal() error {
-	session, err := c.NewSession()
-	if err != nil {
-		return err
-	}
-	defer session.Close()
+// func (c Cli) EnterTerminal_back() error {
+// 	session, err := c.NewSession()
+// 	if err != nil {
+// 		return err
+// 	}
+// 	defer session.Close()
 
-	fd := int(os.Stdin.Fd())
-	oldState, err := term.MakeRaw(fd)
-	if err != nil {
-		return err
-	}
-	defer term.Restore(fd, oldState)
+// 	fd := int(os.Stdin.Fd())
 
-	session.Stdout = os.Stdout
-	session.Stderr = os.Stdin
-	session.Stdin = os.Stdin
+// 	// 跨平台验证：标准输入是否为终端/控制台
+// 	if runtime.GOOS == "windows" {
+// 		// Windows 下验证是否为控制台（通过 GetConsoleMode）
+// 		var mode uint32
+// 		if err := windows.GetConsoleMode(windows.Handle(fd), &mode); err != nil {
+// 			return fmt.Errorf("stdin is not a Windows console: %w", err)
+// 		}
+// 	} else {
+// 		// 非 Windows 系统验证终端
+// 		if !term.IsTerminal(fd) {
+// 			return fmt.Errorf("file descriptor %d is not a terminal", fd)
+// 		}
+// 	}
 
-	termWidth, termHeight, err := term.GetSize(fd)
-	if err != nil {
-		return err
-	}
+// 	oldState, err := term.MakeRaw(fd)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	defer term.Restore(fd, oldState)
 
-	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
-		ssh.TTY_OP_ISPEED: 14400,
-		ssh.TTY_OP_OSPEED: 14400,
-	}
-	err = session.RequestPty("xterm-256color", termHeight, termWidth, modes)
-	if err != nil {
-		return err
-	}
+// 	session.Stdout = os.Stdout
+// 	session.Stderr = os.Stdin
+// 	session.Stdin = os.Stdin
 
-	err = session.Shell()
-	if err != nil {
-		return err
-	}
+// 	termWidth, termHeight, err := getTerminalSize(fd)
+// 	if err != nil {
+// 		return err
+// 	}
 
-	return session.Wait()
-}
+// 	modes := ssh.TerminalModes{
+// 		ssh.ECHO:          1,
+// 		ssh.TTY_OP_ISPEED: 14400,
+// 		ssh.TTY_OP_OSPEED: 14400,
+// 	}
+// 	err = session.RequestPty("xterm-256color", termHeight, termWidth, modes)
+// 	if err != nil {
+// 		err = session.RequestPty("vt100", termHeight, termWidth, modes)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to request PTY (xterm-256color/vt100): %w", err)
+// 		}
+// 	}
+
+// 	err = session.Shell()
+// 	if err != nil {
+// 		return err
+// 	}
+
+// 	return session.Wait()
+// }
 
 // Enter 完全进入终端
 func (c Cli) Enter(w io.Writer, r io.Reader) error {
@@ -306,6 +327,7 @@ func (c Cli) ProxyTerminal(port string) error {
 	}
 	fmt.Println("服务退出")
 	DisableSystemProxy()
+	time.Sleep(20 * time.Second)
 	return nil
 }
 
@@ -463,4 +485,215 @@ func (c Cli) NewMultipleHostsReverseProxy(targets []*url.URL) *httputil.ReverseP
 			},
 		},
 	}
+}
+
+// 手动定义 Windows 控制台相关结构体
+type COORD struct {
+	X int16
+	Y int16
+}
+
+type SMALL_RECT struct {
+	Left   int16
+	Top    int16
+	Right  int16
+	Bottom int16
+}
+
+type CONSOLE_SCREEN_BUFFER_INFO struct {
+	Size              COORD
+	CursorPosition    COORD
+	Attributes        uint16
+	Window            SMALL_RECT
+	MaximumWindowSize COORD
+}
+
+// 手动声明 Windows 系统调用函数
+var (
+	kernel32                       = windows.NewLazySystemDLL("kernel32.dll")
+	procGetConsoleScreenBufferInfo = kernel32.NewProc("GetConsoleScreenBufferInfo")
+	procSetConsoleOutputCP         = kernel32.NewProc("SetConsoleOutputCP") // 设置控制台编码
+	procSetConsoleCP               = kernel32.NewProc("SetConsoleCP")       // 设置控制台输入编码
+)
+
+// getConsoleScreenBufferInfo 调用 Windows 原生 API 获取控制台信息
+func getConsoleScreenBufferInfo(handle windows.Handle, csbi *CONSOLE_SCREEN_BUFFER_INFO) error {
+	r1, _, err := procGetConsoleScreenBufferInfo.Call(
+		uintptr(handle),
+		uintptr(unsafe.Pointer(csbi)),
+	)
+	if r1 == 0 {
+		return err
+	}
+	return nil
+}
+
+// setWindowsConsoleUTF8 强制 Windows 控制台使用 UTF-8 编码（核心修复乱码）
+func setWindowsConsoleUTF8() error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	// 设置 UTF-8 编码
+	r1, _, err := procSetConsoleOutputCP.Call(65001)
+	if r1 == 0 {
+		return fmt.Errorf("set console output UTF-8 failed: %w", err)
+	}
+	r2, _, err := procSetConsoleCP.Call(65001)
+	if r2 == 0 {
+		return fmt.Errorf("set console input UTF-8 failed: %w", err)
+	}
+	// 提示用户切换字体
+	fmt.Println("tip: please set CMD font to 'Consolas' or 'Microsoft YaHei Mono' to display UTF-8 correctly")
+	return nil
+}
+
+// getTerminalSize 兼容 Windows/Linux 的终端大小获取
+func getTerminalSize() (width, height int, err error) {
+	if runtime.GOOS != "windows" {
+		fd := int(os.Stdin.Fd())
+		return term.GetSize(fd)
+	}
+
+	consoleHandle, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+	if err != nil || consoleHandle == windows.InvalidHandle {
+		consoleHandle, err = windows.GetStdHandle(windows.STD_INPUT_HANDLE)
+		if err != nil || consoleHandle == windows.InvalidHandle {
+			return 0, 0, fmt.Errorf("both stdin/stdout handles are invalid: %w", err)
+		}
+	}
+
+	var csbi CONSOLE_SCREEN_BUFFER_INFO
+	err = getConsoleScreenBufferInfo(consoleHandle, &csbi)
+	if err != nil {
+		fmt.Printf("warning: failed to get console size (use default 80x24): %v\n", err)
+		return 80, 24, nil
+	}
+
+	window := csbi.Window
+	width = int(window.Right - window.Left + 1)
+	height = int(window.Bottom - window.Top + 1)
+
+	if width <= 0 || height <= 0 {
+		width = int(csbi.Size.X)
+		height = int(csbi.Size.Y)
+	}
+
+	if width < 40 {
+		width = 40
+	}
+	if height < 10 {
+		height = 10
+	}
+
+	return width, height, nil
+}
+
+// isWindowsConsole 验证 Windows 下是否为真实控制台
+func isWindowsConsole() bool {
+	handleTypes := []uint32{windows.STD_INPUT_HANDLE, windows.STD_OUTPUT_HANDLE}
+
+	for _, hType := range handleTypes {
+		handle, err := windows.GetStdHandle(hType)
+		if err != nil || handle == windows.InvalidHandle {
+			continue
+		}
+		var mode uint32
+		if windows.GetConsoleMode(handle, &mode) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (c Cli) EnterTerminal() error {
+	// 第一步：强制 Windows 控制台使用 UTF-8 编码（解决乱码核心）
+	if runtime.GOOS == "windows" {
+		if err := setWindowsConsoleUTF8(); err != nil {
+			fmt.Printf("warning: set console UTF-8 failed (may cause garbled): %v\n", err)
+		}
+	}
+
+	session, err := c.NewSession()
+	if err != nil {
+		return fmt.Errorf("create session failed: %w", err)
+	}
+	defer session.Close()
+
+	// 跨平台终端验证
+	if runtime.GOOS == "windows" {
+		if !isWindowsConsole() {
+			return fmt.Errorf("must run in Windows CMD/PowerShell (not WSL/third-party terminal)")
+		}
+	} else {
+		fd := int(os.Stdin.Fd())
+		if !term.IsTerminal(fd) {
+			return fmt.Errorf("file descriptor %d is not a terminal", fd)
+		}
+	}
+
+	// 配置终端 Raw 模式（保留 UTF-8 字符完整性）
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		fmt.Printf("warning: failed to set raw mode (input may be abnormal): %v\n", err)
+		oldState = nil
+	} else {
+		defer term.Restore(fd, oldState)
+	}
+
+	// 获取终端大小
+	termWidth, termHeight, err := getTerminalSize()
+	if err != nil {
+		fmt.Printf("warning: %v, force use 80x24\n", err)
+		termWidth, termHeight = 80, 24
+	}
+
+	// 优化 SSH 终端模式（禁用字符转换，确保 UTF-8 完整传输）
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1, // 开启回显（必须）
+		ssh.ICRNL:         1, // 输入 \r 转 \n（兼容 Windows 输入）
+		ssh.ONLCR:         0, // 禁用输出 \n 转 \r\n（避免双重换行）
+		ssh.OCRNL:         0, // 禁用输出 \r 转 \n（防止字符错乱）
+		ssh.ISTRIP:        0, // 禁用字符剥离（保留 UTF-8 多字节）
+		ssh.INLCR:         0, // 禁用输入 \n 转 \r（避免转换错误）
+		ssh.TTY_OP_ISPEED: 115200,
+		ssh.TTY_OP_OSPEED: 115200,
+		ssh.IXANY:         1, // 允许任意字符重启输入
+		ssh.IXOFF:         0, // 禁用流控制
+		ssh.IXON:          0, // 禁用 XON/XOFF（避免字符被吞）
+		ssh.CS8:           1, // 强制 8 位字符（UTF-8 必需）
+	}
+
+	// 请求 PTY（指定 UTF-8 兼容的终端类型）
+	ptyType := "xterm-256color" // 支持 UTF-8 的终端类型
+	err = session.RequestPty(ptyType, termHeight, termWidth, modes)
+	if err != nil {
+		ptyType = "vt100"
+		err = session.RequestPty(ptyType, termHeight, termWidth, modes)
+		if err != nil {
+			ptyType = "dumb"
+			err = session.RequestPty(ptyType, termHeight, termWidth, modes)
+			if err != nil {
+				fmt.Printf("warning: request PTY failed, try without PTY: %v\n", err)
+			}
+		}
+	}
+	fmt.Printf("Using terminal: %s (size: %dx%d, encoding: UTF-8)\n", ptyType, termWidth, termHeight)
+
+	// 绑定标准流（确保 UTF-8 字符无转换传输）
+	session.Stdin = os.Stdin
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+
+	// 启动 Shell
+	err = session.Shell()
+	if err != nil {
+		fmt.Printf("warning: start shell with PTY failed, try without PTY: %v\n", err)
+		err = session.Run("bash -i")
+		if err != nil {
+			return fmt.Errorf("start shell failed: %w", err)
+		}
+	}
+
+	return session.Wait()
 }

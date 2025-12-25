@@ -14,8 +14,12 @@ func Terminal(addr core.Address) error {
 	}
 
 	time.Sleep(1 * time.Second)
-
-	return c.EnterTerminal()
+	err = c.EnterTerminal()
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	return nil
 
 }
 
