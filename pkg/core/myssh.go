@@ -302,6 +302,12 @@ func (c Cli) ProxyTerminal(port string) error {
 	server := &http.Server{
 		Addr: ":" + port,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, err := c.Run("echo 1")
+			if err != nil {
+				log.Println("error: 链接已断开", err)
+				// 重新连接
+				c.connect()
+			}
 			if r.Method == http.MethodConnect {
 				c.handleTunneling(w, r)
 			} else {

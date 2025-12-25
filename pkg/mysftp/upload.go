@@ -74,7 +74,7 @@ func (s *MySftp) Upload(localFile, remoteFile core.File, callBack core.Callback)
 	progressWriter := &ProgressWriter{
 		Writer:       dstFile,
 		Total:        fileSize,
-		Desc:         "uploading",
+		Desc:         "uploading-" + remoteFile.ServerName,
 		Bar:          bar1,
 		TransferSize: remoteFileSize,
 	}

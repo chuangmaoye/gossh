@@ -48,6 +48,7 @@ func (s *MySftp) Download(remoteFile, localFile core.File, callBack core.Callbac
 		if err != nil {
 			return err
 		}
+		localFileSize = 0
 	} else {
 		dstFile, err = os.OpenFile(localFile.Path(), os.O_APPEND|os.O_WRONLY, os.ModeAppend)
 		if err != nil {
@@ -65,7 +66,7 @@ func (s *MySftp) Download(remoteFile, localFile core.File, callBack core.Callbac
 	progressWriter := &ProgressWriter{
 		Writer:       dstFile,
 		Total:        fileSize,
-		Desc:         "downloading",
+		Desc:         "downloading-" + remoteFile.ServerName,
 		Bar:          bar1,
 		TransferSize: localFileSize,
 	}

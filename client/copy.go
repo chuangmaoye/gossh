@@ -58,7 +58,7 @@ func Copy(args ...string) error {
 	if err != nil {
 		return err
 	}
-
+	src = handleTilde(src, cmd)
 	srcObj := CopyDstObj{
 		PahtDir:  src,
 		Addr:     srcAddr,
@@ -71,24 +71,24 @@ func Copy(args ...string) error {
 		dstObj := CopyDstObj{}
 		vs := strings.Split(v, ":")
 		if len(vs) < 2 {
-			dstObj.PahtDir = v
-			dstObj.Location = e.FILE_LOCATION_LOCAL
 			dstcmd, err := command.GetCmd(e.FILE_LOCATION_LOCAL, core.Address{})
 			if err != nil {
 				return err
 			}
+			dstObj.PahtDir = handleTilde(v, dstcmd)
+			dstObj.Location = e.FILE_LOCATION_LOCAL
 			dstObj.Cmd = dstcmd
 			dstObjs = append(dstObjs, dstObj)
 			continue
 		}
 		if addr, ok := ServerAddresss[vs[0]]; ok {
-			dstObj.PahtDir = vs[1]
-			dstObj.Addr = addr
-			dstObj.Location = e.FILE_LOCATION_REMOTE
 			dstcmd, err := command.GetCmd(e.FILE_LOCATION_REMOTE, addr)
 			if err != nil {
 				return err
 			}
+			dstObj.PahtDir = handleTilde(vs[1], dstcmd)
+			dstObj.Addr = addr
+			dstObj.Location = e.FILE_LOCATION_REMOTE
 			dstObj.Cmd = dstcmd
 			dstObjs = append(dstObjs, dstObj)
 		} else {
@@ -156,7 +156,7 @@ func CopyDir(args ...string) error {
 	if err != nil {
 		return err
 	}
-
+	src = handleTilde(src, cmd)
 	srcObj := CopyDstObj{
 		PahtDir:  src,
 		Addr:     srcAddr,
@@ -178,24 +178,25 @@ func CopyDir(args ...string) error {
 		dstObj := CopyDstObj{}
 		vs := strings.Split(v, ":")
 		if len(vs) < 2 {
-			dstObj.PahtDir = v
-			dstObj.Location = e.FILE_LOCATION_LOCAL
+
 			dstcmd, err := command.GetCmd(e.FILE_LOCATION_LOCAL, core.Address{})
 			if err != nil {
 				return err
 			}
+			dstObj.PahtDir = handleTilde(v, dstcmd)
+			dstObj.Location = e.FILE_LOCATION_LOCAL
 			dstObj.Cmd = dstcmd
 			dstObjs = append(dstObjs, dstObj)
 			continue
 		}
 		if addr, ok := ServerAddresss[vs[0]]; ok {
-			dstObj.PahtDir = vs[1]
-			dstObj.Addr = addr
-			dstObj.Location = e.FILE_LOCATION_REMOTE
 			dstcmd, err := command.GetCmd(e.FILE_LOCATION_REMOTE, addr)
 			if err != nil {
 				return err
 			}
+			dstObj.PahtDir = handleTilde(vs[1], dstcmd)
+			dstObj.Addr = addr
+			dstObj.Location = e.FILE_LOCATION_REMOTE
 			dstObj.Cmd = dstcmd
 			dstObjs = append(dstObjs, dstObj)
 		} else {
@@ -346,4 +347,19 @@ func _cpFile(src, dst CopyDstObj, srcFile core.File, tmpdir string) {
 			<-CpChan
 		}()
 	}
+}
+
+// 处理 ~符为 $HOME
+func handleTilde(path string, cmd command.Cmd) string {
+	if strings.HasPrefix(path, "~") {
+		home, err := cmd.Run("echo $HOME")
+		home = strings.Trim(home, "\n")
+		fmt.Println(home)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return path
+		}
+		return strings.Replace(path, "~", home, 1)
+	}
+	return path
 }

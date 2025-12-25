@@ -25,7 +25,7 @@ func SetSystemProxy(config ProxyConfig) error {
 	case "darwin":
 		return setMacOSProxy(config)
 	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+		return nil
 	}
 }
 
